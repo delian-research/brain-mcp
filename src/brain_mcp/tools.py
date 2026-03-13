@@ -1,31 +1,61 @@
 """MCP tool registrations for the Brain vault."""
 
-import json
 import logging
 from datetime import date
 from typing import Optional
 
+import anyio
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
+from mcp.types import ToolAnnotations
 
 from brain_mcp.models import (
+    AppendToNoteInput,
     BacklinksInput,
     CreateNoteInput,
+    GetRecentInput,
+    GetTagsInput,
     ListNotesInput,
     MoveNoteInput,
     ReadNoteInput,
+    SearchFrontmatterInput,
     SearchNotesInput,
     UpdateNoteInput,
 )
+from brain_mcp.outputs import (
+    AppendResult,
+    BacklinkEntry,
+    BacklinksResult,
+    CreateNoteResult,
+    FrontmatterMatch,
+    GetRecentResult,
+    GetTagsResult,
+    ListFoldersResult,
+    ListNotesResult,
+    MoveNoteResult,
+    NoteMatch,
+    NoteSummary,
+    ReadNoteResult,
+    RecentNote,
+    SearchFrontmatterResult,
+    SearchResult,
+    UpdateNoteResult,
+    VaultStructure,
+)
 from brain_mcp.vault import (
+    append_to_note,
     collect_notes,
     create_note,
     extract_wikilinks,
     find_backlinks,
+    get_all_tags,
+    get_recent_notes,
     get_structure,
     list_folders,
     move_note,
     parse_frontmatter,
     search_content,
+    search_frontmatter,
     update_note,
     vault_relative,
 )
@@ -34,247 +64,391 @@ logger = logging.getLogger("brain_mcp.tools")
 
 
 def register_tools(mcp: FastMCP) -> None:
-    """Register all Brain vault tools on the given MCP server."""
+    """Register all Brain vault tools on the MCP server."""
 
     @mcp.tool(
         name="brain_search_notes",
-        annotations={
-            "title": "Search Brain Vault",
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-            "openWorldHint": False,
-        },
+        annotations=ToolAnnotations(
+            title="Search Brain Vault",
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        ),
     )
-    async def brain_search_notes(params: SearchNotesInput) -> str:
-        """Full-text search across the Brain Obsidian vault.
+    async def brain_search_notes(
+        params: SearchNotesInput,
+    ) -> SearchResult:
+        """Full-text search across the Brain vault.
 
-        Searches note content for the given query string and returns matching
-        notes with context snippets.
+        Searches note content for the given query string
+        and returns matching notes with context snippets.
         """
         try:
-            results = search_content(params.query, params.folder)
-            if not results:
-                return f"No notes found matching '{params.query}'"
-
+            results = await search_content(params.query, params.folder)
             trimmed = results[: params.limit]
-            return json.dumps(
-                {"total": len(results), "showing": len(trimmed), "results": trimmed},
-                indent=2,
+            return SearchResult(
+                total=len(results),
+                showing=len(trimmed),
+                results=[NoteMatch(**r) for r in trimmed],
             )
         except ValueError as e:
-            return f"Error: {e}"
+            raise ToolError(str(e)) from e
         except OSError:
             logger.exception("Failed to search vault")
-            return "Error reading vault"
+            raise ToolError("Error reading vault")
 
     @mcp.tool(
         name="brain_list_notes",
-        annotations={
-            "title": "List Notes in Vault",
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-            "openWorldHint": False,
-        },
+        annotations=ToolAnnotations(
+            title="List Notes in Vault",
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        ),
     )
-    async def brain_list_notes(params: ListNotesInput) -> str:
-        """List notes in a vault folder with optional filtering by type."""
+    async def brain_list_notes(
+        params: ListNotesInput,
+    ) -> ListNotesResult:
+        """List notes with optional type filtering."""
         try:
-            notes = collect_notes(params.folder, params.note_type, params.recursive)
+            notes = await collect_notes(
+                params.folder,
+                params.note_type,
+                params.recursive,
+            )
             trimmed = notes[: params.limit]
-            return json.dumps(
-                {"total": len(notes), "showing": len(trimmed), "notes": trimmed},
-                indent=2,
+            return ListNotesResult(
+                total=len(notes),
+                showing=len(trimmed),
+                notes=[NoteSummary(**n) for n in trimmed],
             )
         except ValueError as e:
-            return f"Error: {e}"
+            raise ToolError(str(e)) from e
         except OSError:
             logger.exception("Failed to list notes")
-            return "Error reading vault"
+            raise ToolError("Error reading vault")
 
     @mcp.tool(
         name="brain_read_note",
-        annotations={
-            "title": "Read a Note",
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-            "openWorldHint": False,
-        },
+        annotations=ToolAnnotations(
+            title="Read a Note",
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        ),
     )
-    async def brain_read_note(params: ReadNoteInput) -> str:
-        """Read the full content of a specific note by path or title."""
+    async def brain_read_note(
+        params: ReadNoteInput,
+    ) -> ReadNoteResult:
+        """Read the full content of a note."""
         try:
-            p = params.resolve()
-            if not p.exists():
-                return f"Error: Note not found at {vault_relative(p)}"
+            p = await params.resolve()
+            if not await anyio.Path(p).exists():
+                raise ToolError(f"Note not found at {vault_relative(p)}")
 
-            text = p.read_text(encoding="utf-8", errors="replace")
+            text = await anyio.Path(p).read_text(encoding="utf-8", errors="replace")
             meta = parse_frontmatter(text)
             links = extract_wikilinks(text)
 
-            return json.dumps(
-                {
-                    "path": vault_relative(p),
-                    "title": p.stem,
-                    "frontmatter": meta,
-                    "wikilinks": links,
-                    "content": text,
-                },
-                indent=2,
+            return ReadNoteResult(
+                path=vault_relative(p),
+                title=p.stem,
+                frontmatter=meta,
+                wikilinks=links,
+                content=text,
             )
         except (FileNotFoundError, ValueError) as e:
-            return f"Error: {e}"
+            raise ToolError(str(e)) from e
         except OSError:
             logger.exception("Failed to read note")
-            return "Error reading note"
+            raise ToolError("Error reading note")
 
     @mcp.tool(
         name="brain_create_note",
-        annotations={
-            "title": "Create a New Note",
-            "readOnlyHint": False,
-            "destructiveHint": False,
-            "idempotentHint": False,
-            "openWorldHint": False,
-        },
+        annotations=ToolAnnotations(
+            title="Create a New Note",
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=False,
+            openWorldHint=False,
+        ),
     )
-    async def brain_create_note(params: CreateNoteInput) -> str:
-        """Create a new note in the vault. Defaults to Notes/ per workflow."""
+    async def brain_create_note(
+        params: CreateNoteInput,
+    ) -> CreateNoteResult:
+        """Create a new note in the vault.
+
+        Defaults to Notes/ per workflow.
+        """
         try:
-            target = create_note(params.folder, params.title, params.content)
-            return json.dumps(
-                {
-                    "status": "created",
-                    "path": vault_relative(target),
-                    "title": target.stem,
-                },
-                indent=2,
+            target = await create_note(
+                params.folder,
+                params.title,
+                params.content,
+            )
+            return CreateNoteResult(
+                path=vault_relative(target),
+                title=target.stem,
             )
         except (ValueError, FileExistsError) as e:
-            return f"Error: {e}"
+            raise ToolError(str(e)) from e
         except OSError:
             logger.exception("Failed to create note")
-            return "Error creating note"
+            raise ToolError("Error creating note")
 
     @mcp.tool(
         name="brain_update_note",
-        annotations={
-            "title": "Update an Existing Note",
-            "readOnlyHint": False,
-            "destructiveHint": False,
-            "idempotentHint": True,
-            "openWorldHint": False,
-        },
+        annotations=ToolAnnotations(
+            title="Update an Existing Note",
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        ),
     )
-    async def brain_update_note(params: UpdateNoteInput) -> str:
+    async def brain_update_note(
+        params: UpdateNoteInput,
+    ) -> UpdateNoteResult:
         """Update the content of an existing note."""
         try:
-            p = params.resolve()
-            update_note(p, params.content, params.update_date)
-            return json.dumps(
-                {
-                    "status": "updated",
-                    "path": vault_relative(p),
-                    "title": p.stem,
-                    "updated_date": date.today().isoformat(),
-                },
-                indent=2,
+            p = await params.resolve()
+            await update_note(p, params.content, params.update_date)
+            return UpdateNoteResult(
+                path=vault_relative(p),
+                title=p.stem,
+                updated_date=date.today().isoformat(),
             )
         except (FileNotFoundError, ValueError) as e:
-            return f"Error: {e}"
+            raise ToolError(str(e)) from e
         except OSError:
             logger.exception("Failed to update note")
-            return "Error updating note"
+            raise ToolError("Error updating note")
 
     @mcp.tool(
         name="brain_move_note",
-        annotations={
-            "title": "Move / Promote a Note",
-            "readOnlyHint": False,
-            "destructiveHint": False,
-            "idempotentHint": False,
-            "openWorldHint": False,
-        },
+        annotations=ToolAnnotations(
+            title="Move / Promote a Note",
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=False,
+            openWorldHint=False,
+        ),
     )
-    async def brain_move_note(params: MoveNoteInput) -> str:
-        """Move a note from one folder to another (e.g., promote from inbox)."""
+    async def brain_move_note(
+        params: MoveNoteInput,
+    ) -> MoveNoteResult:
+        """Move a note between folders (e.g., promote)."""
         try:
-            old, new = move_note(params.source, params.destination_folder)
-            return json.dumps(
-                {"status": "moved", "from": old, "to": new},
-                indent=2,
+            old, new = await move_note(
+                params.source,
+                params.destination_folder,
             )
-        except (ValueError, FileNotFoundError, FileExistsError) as e:
-            return f"Error: {e}"
+            return MoveNoteResult(
+                from_path=old,
+                to_path=new,
+            )
+        except (
+            ValueError,
+            FileNotFoundError,
+            FileExistsError,
+        ) as e:
+            raise ToolError(str(e)) from e
         except OSError:
             logger.exception("Failed to move note")
-            return "Error moving note"
+            raise ToolError("Error moving note")
 
     @mcp.tool(
         name="brain_find_backlinks",
-        annotations={
-            "title": "Find Backlinks",
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-            "openWorldHint": False,
-        },
+        annotations=ToolAnnotations(
+            title="Find Backlinks",
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        ),
     )
-    async def brain_find_backlinks(params: BacklinksInput) -> str:
-        """Find all notes that link to a given note via [[wikilinks]]."""
+    async def brain_find_backlinks(
+        params: BacklinksInput,
+    ) -> BacklinksResult:
+        """Find notes linking to a note via [[wikilinks]]."""
         try:
-            backlinks = find_backlinks(params.title)
-            if not backlinks:
-                return f"No backlinks found for '{params.title}'"
-
-            return json.dumps(
-                {
-                    "target": params.title,
-                    "backlink_count": len(backlinks),
-                    "backlinks": backlinks,
-                },
-                indent=2,
+            backlinks = await find_backlinks(params.title)
+            return BacklinksResult(
+                target=params.title,
+                backlink_count=len(backlinks),
+                backlinks=[BacklinkEntry(**b) for b in backlinks],
             )
         except OSError:
             logger.exception("Failed to scan vault for backlinks")
-            return "Error scanning vault"
+            raise ToolError("Error scanning vault")
 
     @mcp.tool(
         name="brain_get_structure",
-        annotations={
-            "title": "Get Vault Structure",
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-            "openWorldHint": False,
-        },
+        annotations=ToolAnnotations(
+            title="Get Vault Structure",
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        ),
     )
-    async def brain_get_structure() -> str:
-        """Get a high-level overview of the vault structure."""
+    async def brain_get_structure() -> VaultStructure:
+        """Get a high-level overview of vault structure."""
         try:
-            return json.dumps(get_structure(), indent=2)
+            data = await get_structure()
+            return VaultStructure(**data)
         except OSError:
             logger.exception("Failed to read vault structure")
-            return "Error reading vault structure"
+            raise ToolError("Error reading vault structure")
 
     @mcp.tool(
         name="brain_list_folders",
-        annotations={
-            "title": "List Vault Folders",
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-            "openWorldHint": False,
-        },
+        annotations=ToolAnnotations(
+            title="List Vault Folders",
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        ),
     )
-    async def brain_list_folders(folder: Optional[str] = None) -> str:
+    async def brain_list_folders(
+        folder: Optional[str] = None,
+    ) -> ListFoldersResult:
         """List subfolders within a vault directory."""
         try:
-            return json.dumps(list_folders(folder), indent=2)
+            data = await list_folders(folder)
+            return ListFoldersResult(**data)
         except (ValueError, NotADirectoryError) as e:
-            return f"Error: {e}"
+            raise ToolError(str(e)) from e
         except OSError:
             logger.exception("Failed to list folders")
-            return "Error listing folders"
+            raise ToolError("Error listing folders")
+
+    @mcp.tool(
+        name="brain_append_to_note",
+        annotations=ToolAnnotations(
+            title="Append to a Note",
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=False,
+            openWorldHint=False,
+        ),
+    )
+    async def brain_append_to_note(
+        params: AppendToNoteInput,
+    ) -> AppendResult:
+        """Append text to an existing note without overwriting.
+
+        Adds content to the end of the note. Useful for logs,
+        journal entries, or incremental updates.
+        """
+        try:
+            p = await params.resolve()
+            await append_to_note(p, params.text, params.update_date)
+            return AppendResult(
+                path=vault_relative(p),
+                title=p.stem,
+            )
+        except (FileNotFoundError, ValueError) as e:
+            raise ToolError(str(e)) from e
+        except OSError:
+            logger.exception("Failed to append to note")
+            raise ToolError("Error appending to note")
+
+    @mcp.tool(
+        name="brain_search_frontmatter",
+        annotations=ToolAnnotations(
+            title="Search by Frontmatter",
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        ),
+    )
+    async def brain_search_frontmatter(
+        params: SearchFrontmatterInput,
+    ) -> SearchFrontmatterResult:
+        """Search notes by frontmatter field and optional value.
+
+        Find notes with specific metadata, e.g., all notes with
+        status: active, or all notes that have a 'tags' field.
+        """
+        try:
+            results = await search_frontmatter(
+                params.field, params.value, params.folder
+            )
+            trimmed = results[: params.limit]
+            return SearchFrontmatterResult(
+                total=len(results),
+                showing=len(trimmed),
+                field=params.field,
+                results=[FrontmatterMatch(**r) for r in trimmed],
+            )
+        except ValueError as e:
+            raise ToolError(str(e)) from e
+        except OSError:
+            logger.exception("Failed to search frontmatter")
+            raise ToolError("Error searching frontmatter")
+
+    @mcp.tool(
+        name="brain_get_recent",
+        annotations=ToolAnnotations(
+            title="Get Recent Notes",
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        ),
+    )
+    async def brain_get_recent(
+        params: GetRecentInput,
+    ) -> GetRecentResult:
+        """Get recently modified notes sorted by modification time.
+
+        Uses filesystem timestamps for accuracy.
+        """
+        try:
+            results = await get_recent_notes(params.limit, params.folder)
+            return GetRecentResult(
+                total=len(results),
+                showing=len(results),
+                notes=[RecentNote(**r) for r in results],
+            )
+        except ValueError as e:
+            raise ToolError(str(e)) from e
+        except OSError:
+            logger.exception("Failed to get recent notes")
+            raise ToolError("Error getting recent notes")
+
+    @mcp.tool(
+        name="brain_get_tags",
+        annotations=ToolAnnotations(
+            title="Get All Tags",
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        ),
+    )
+    async def brain_get_tags(
+        params: GetTagsInput,
+    ) -> GetTagsResult:
+        """Get all unique tags from frontmatter across the vault.
+
+        Useful for discovering tag taxonomy and finding
+        notes to explore.
+        """
+        try:
+            tags = await get_all_tags(params.folder)
+            return GetTagsResult(
+                total=len(tags),
+                tags=tags,
+            )
+        except ValueError as e:
+            raise ToolError(str(e)) from e
+        except OSError:
+            logger.exception("Failed to get tags")
+            raise ToolError("Error getting tags")

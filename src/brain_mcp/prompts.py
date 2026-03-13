@@ -8,15 +8,15 @@ from brain_mcp.vault import collect_notes
 
 
 def register_prompts(mcp: FastMCP) -> None:
-    """Register all Brain vault prompts on the given MCP server."""
+    """Register all Brain vault prompts on the MCP server."""
 
     @mcp.prompt()
-    def vault_review() -> str:
+    async def vault_review() -> str:
         """Review inbox for notes ready to be promoted."""
-        notes = collect_notes("Notes", recursive=True)
+        notes = await collect_notes("Notes", recursive=True)
 
         if not notes:
-            return "The inbox is empty — no notes pending review."
+            return "The inbox is empty -- no notes pending review."
 
         lines = [
             "# Vault Inbox Review",
@@ -24,7 +24,8 @@ def register_prompts(mcp: FastMCP) -> None:
             "The following notes are in `Notes/` and may be ready for promotion.",
             "",
             "## Promotion Criteria",
-            "A note is ready when: all template sections are filled, content is verified,",
+            "A note is ready when: all template sections "
+            "are filled, content is verified,",
             "and it is no longer actively being worked on.",
             "",
             "## Promotion Targets",
@@ -53,7 +54,8 @@ def register_prompts(mcp: FastMCP) -> None:
                 "For each note above:",
                 "1. Use `brain_read_note` to review its content",
                 "2. Determine if it meets promotion criteria",
-                "3. If ready, use `brain_move_note` to move it to the appropriate folder",
+                "3. If ready, use `brain_move_note` "
+                "to move it to the appropriate folder",
                 "4. After moving, ensure it is linked from at least one MOC",
             ]
         )
@@ -66,9 +68,12 @@ def register_prompts(mcp: FastMCP) -> None:
         context_reviewed: str = "",
         what_changed: str = "",
     ) -> str:
-        """Create a KB Update note documenting a work session."""
+        """Create a KB Update note documenting a session."""
         today = date.today().isoformat()
-        return f"""Create a KB Update note using `brain_create_note` with:
+        ctx = context_reviewed or ("(list [[wikilinks]] to notes consulted)")
+        chg = what_changed or "(describe changes made)"
+        return f"""Create a KB Update note using \
+`brain_create_note` with:
 
 **Title**: `{today} - {task_name}`
 **Folder**: `Notes` (default)
@@ -88,11 +93,11 @@ Task: {task_name}
 
 ## Context Reviewed
 
-- {context_reviewed or "(list [[wikilinks]] to notes consulted)"}
+- {ctx}
 
 ## What Changed
 
-- {what_changed or "(describe changes made)"}
+- {chg}
 
 ## Why
 
@@ -123,7 +128,8 @@ After creating, confirm the file path in the response."""
         """Quick-capture a fleeting note to the inbox."""
         today = date.today().isoformat()
         title = f"{today} - {topic}" if topic else f"{today} - Quick Capture"
-        return f"""Create a quick fleeting note using `brain_create_note`:
+        return f"""Create a quick fleeting note using \
+`brain_create_note`:
 
 **Title**: `{title}`
 **Folder**: `Notes`
@@ -146,18 +152,20 @@ updated: {today}
 -
 ```
 
-Keep it brief — fleeting notes are meant for quick capture.
+Keep it brief -- fleeting notes are meant for quick capture.
 They'll be reviewed and promoted during vault maintenance."""
 
     @mcp.prompt()
-    def project_status() -> str:
+    async def project_status() -> str:
         """Get a status overview of all active projects."""
-        projects = collect_notes("Projects", note_type="project", recursive=True)
+        projects = await collect_notes("Projects", note_type="project", recursive=True)
 
         if not projects:
             return (
-                "No project notes found. Use `brain_list_notes` with folder='Projects' "
-                "to see all notes in the projects folder."
+                "No project notes found. "
+                "Use `brain_list_notes` with "
+                "folder='Projects' to see all notes "
+                "in the projects folder."
             )
 
         lines = [
@@ -188,15 +196,21 @@ They'll be reviewed and promoted during vault maintenance."""
     @mcp.prompt()
     def find_related(topic: str) -> str:
         """Find and map all notes related to a topic."""
-        return f"""Investigate how '{topic}' is covered across the Brain vault:
+        return f"""Investigate how '{topic}' is covered \
+across the Brain vault:
 
-1. **Search**: Use `brain_search_notes` with query='{topic}' to find all mentions
-2. **Structure**: Use `brain_get_structure` to see the vault layout and MOC - Home
-3. **Backlinks**: For key notes found, use `brain_find_backlinks` to map connections
-4. **Read**: Use `brain_read_note` on the most relevant 2-3 notes for full context
+1. **Search**: Use `brain_search_notes` with \
+query='{topic}' to find all mentions
+2. **Structure**: Use `brain_get_structure` to see the \
+vault layout and MOC - Home
+3. **Backlinks**: For key notes found, use \
+`brain_find_backlinks` to map connections
+4. **Read**: Use `brain_read_note` on the most relevant \
+2-3 notes for full context
 
 Synthesize findings into:
 - **Coverage summary**: What exists about {topic}
 - **Key notes**: The most important references
 - **Gaps**: What's missing or could be added
-- **Connections**: How {topic} relates to other vault content"""
+- **Connections**: How {topic} relates to other \
+vault content"""
