@@ -2,4 +2,10 @@
 .DS_Store
 __pycache__/
 *.pyc
+*.egg-info/
 .idea/
+.ruff_cache/
+dist/
+build/
+.coverage
+htmlcov/
